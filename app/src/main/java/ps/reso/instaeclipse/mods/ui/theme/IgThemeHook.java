@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -42,6 +43,8 @@ public class IgThemeHook {
             hookGetColor(classLoader);
             hookContextGetColor();
             hookTypedArrayGetColor(classLoader);
+            hookViewBackgroundColor(classLoader);
+            hookColorDrawable(classLoader);
             hookActivityLifecycle();
             hookPhoneWindowColors(classLoader);
             installed = true;
@@ -199,6 +202,52 @@ public class IgThemeHook {
                 } catch (Throwable ignored) {}
             }
         });
+    }
+
+    /**
+     * Resource-resolution hooks above only catch colors that pass through Resources/Theme/
+     * TypedArray. Some containers get their background from a literal int baked straight into
+     * Instagram's code (e.g. view.setBackgroundColor(0xff0c0f14)), which never touches any of
+     * those APIs and so stays unthemed. This catches that path directly.
+     */
+    private void hookViewBackgroundColor(final ClassLoader cl) {
+        XC_MethodHook hook = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (!FeatureFlags.customThemeEnabled || !IgColorRemapEngine.isReady()) return;
+                if (IgColorRemapEngine.shouldSkipRemap(param.thisObject)) return;
+                int original = (Integer) param.args[0];
+                int remapped = IgColorRemapEngine.remap(original);
+                if (remapped != original) param.args[0] = remapped;
+            }
+        };
+        try {
+            XposedHelpers.findAndHookMethod(View.class, "setBackgroundColor", int.class, hook);
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Same gap as above but for the setBackground(new ColorDrawable(...)) style instead of
+     * setBackgroundColor(int). ColorDrawable has no view context by the time its color is set,
+     * so this relies on the global module-UI bypass flag rather than the per-view tag check.
+     */
+    private void hookColorDrawable(final ClassLoader cl) {
+        XC_MethodHook hook = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (!FeatureFlags.customThemeEnabled || IgColorRemapEngine.isBypassing()
+                        || !IgColorRemapEngine.isReady()) return;
+                int original = (Integer) param.args[0];
+                int remapped = IgColorRemapEngine.remap(original);
+                if (remapped != original) param.args[0] = remapped;
+            }
+        };
+        try {
+            XposedHelpers.findAndHookConstructor(ColorDrawable.class, int.class, hook);
+        } catch (Throwable ignored) {}
+        try {
+            XposedHelpers.findAndHookMethod(ColorDrawable.class, "setColor", int.class, hook);
+        } catch (Throwable ignored) {}
     }
 
     private void hookActivityLifecycle() {
